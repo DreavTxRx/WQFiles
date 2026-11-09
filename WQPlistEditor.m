@@ -198,7 +198,7 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
         dispatch_async(dispatch_get_main_queue(), ^{
             if (!root) {
                 self.status = data ? [NSString stringWithFormat:@"Not a property list: %@", parseError.localizedDescription]
-                                   : [NSString stringWithFormat:@"Cannot read this file: %@", error];
+                                   : (wq_permission_hint(path, NO) ?: [NSString stringWithFormat:@"Cannot read this file: %@", error]);
             } else if (![root isKindOfClass:NSMutableDictionary.class] && ![root isKindOfClass:NSMutableArray.class]) {
                 // A plist whose root is a single value: wrap it for display only.
                 self.doc.root = root;
@@ -206,6 +206,7 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
                 self.container = [NSMutableArray arrayWithObject:root];
                 self.status = nil;
             } else {
+                if (wq_permission_hint(path, YES)) self.doc.readOnly = YES;   // readable, but only the owner may write
                 self.doc.root = root;
                 self.doc.format = format;
                 self.container = root;
@@ -314,7 +315,7 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
             NSString *writeError = nil;
             BOOL ok = wq_write(doc.path, data, &writeError);
             dispatch_async(dispatch_get_main_queue(), ^{
-                if (!ok) { wqp_alert(self, @"Save failed", writeError ?: @"Unknown error"); return; }
+                if (!ok) { wqp_alert(self, @"Save failed", wq_permission_hint(doc.path, YES) ?: writeError ?: @"Unknown error"); return; }
                 doc.dirty = NO;
                 [self updateBar];
             });

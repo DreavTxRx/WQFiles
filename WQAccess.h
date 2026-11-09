@@ -40,6 +40,10 @@ BOOL wq_create_file_from(NSString *path, NSString *source, NSString *_Nullable *
 // Streams a file from anywhere into a local path (replaced if it exists).
 BOOL wq_copy_to_local(NSString *path, NSString *dest, NSString *_Nullable *_Nullable errorText);
 
+// When Unix permissions (not the sandbox) keep this app out of `path`: an
+// explanation for the user; nil if the owner and mode allow it.
+NSString *_Nullable wq_permission_hint(NSString *path, BOOL forWriting);
+
 // Reads `length` bytes at `offset` (fewer at the end of the file).
 NSData *_Nullable wq_read_range(NSString *path, unsigned long long offset, NSUInteger length,
                                 NSString *_Nullable *_Nullable errorText);

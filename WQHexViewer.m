@@ -79,6 +79,7 @@ static NSData *wqh_parse_hex(NSString *text)
         BOOL ok = wq_stat(path, &st) && S_ISREG(st.st_mode);
         dispatch_async(dispatch_get_main_queue(), ^{
             self->_size = ok ? (unsigned long long)st.st_size : 0;
+            if (wq_permission_hint(path, YES)) self->_readOnly = YES;
             self->_status = ok ? nil : @"Cannot open this file.";
             [self updateBar];
             [self.tableView reloadData];
@@ -155,7 +156,11 @@ static NSData *wqh_parse_hex(NSString *text)
         NSData *data = wq_read_range(path, page.unsignedLongLongValue * kPageSize, kPageSize, &error);
         dispatch_async(dispatch_get_main_queue(), ^{
             [self->_loading removeObject:page];
-            if (!data) { self->_status = [NSString stringWithFormat:@"Read failed: %@", error]; [self updateBar]; return; }
+            if (!data) {
+                self->_status = wq_permission_hint(path, NO) ? @"Only the owner may read this file." : [NSString stringWithFormat:@"Read failed: %@", error];
+                [self updateBar];
+                return;
+            }
             [self->_pages setObject:data forKey:page];
             [self.tableView reloadRowsAtIndexPaths:self.tableView.indexPathsForVisibleRows
                                   withRowAnimation:UITableViewRowAnimationNone];
@@ -287,7 +292,7 @@ static NSData *wqh_parse_hex(NSString *text)
             NSString *error = nil;
             BOOL ok = wq_patch(path, runs, &error);
             dispatch_async(dispatch_get_main_queue(), ^{
-                if (!ok) { wqh_alert(self, @"Save failed", error ?: @"Unknown error"); return; }
+                if (!ok) { wqh_alert(self, @"Save failed", wq_permission_hint(path, YES) ?: error ?: @"Unknown error"); return; }
                 [self->_edits removeAllObjects];
                 [self->_pages removeAllObjects];
                 [self updateBar];

@@ -469,6 +469,21 @@ BOOL wq_copy_to_local(NSString *path, NSString *dest, NSString **errorText)
     return wq_copy_file_out(path, dest, errorText);
 }
 
+NSString *wq_permission_hint(NSString *path, BOOL forWriting)
+{
+    struct stat st;
+    if (lstat(path.fileSystemRepresentation, &st) != 0) return nil;
+    uid_t me = getuid();
+    mode_t need = forWriting ? 2 : 4;   // w / r
+    BOOL allowed = st.st_uid == me ? (st.st_mode >> 6 & need) != 0
+                 : (st.st_gid == getgid() ? (st.st_mode >> 3 & need) != 0 : (st.st_mode & need) != 0);
+    if (allowed) return nil;
+    NSString *owner = st.st_uid == 0 ? @"root" : [NSString stringWithFormat:@"uid %d", (int)st.st_uid];
+    return [NSString stringWithFormat:@"This file belongs to %@ (mode %o) and only its owner may %@ it. "
+            "WQ Files reaches the folder, but runs as mobile (uid %d), so no app can %@ this file.",
+            owner, st.st_mode & 07777, forWriting ? @"change" : @"read", (int)me, forWriting ? @"change" : @"open"];
+}
+
 NSData *wq_read_range(NSString *path, unsigned long long offset, NSUInteger length, NSString **errorText)
 {
     int fd = wq_open(path, O_RDONLY, 0);

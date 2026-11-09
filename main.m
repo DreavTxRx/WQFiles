@@ -421,7 +421,8 @@ static const NSUInteger kHexLimit = 64 * 1024;
         NSData *data = wq_read(path, kViewLimit + 1, &error);
         dispatch_async(dispatch_get_main_queue(), ^{
             if (!data) {
-                self->_textView.text = [NSString stringWithFormat:@"Cannot read this file.\n\n%@", error];
+                NSString *hint = wq_permission_hint(path, NO);
+                self->_textView.text = [NSString stringWithFormat:@"Cannot read this file.\n\n%@", hint ?: error];
                 return;
             }
             NSString *info = exists
@@ -429,6 +430,7 @@ static const NSUInteger kHexLimit = 64 * 1024;
                    st.st_mode & 07777, st.st_uid]
                 : @"";
             self.navigationItem.prompt = info.length ? info : nil;
+            if (wq_permission_hint(path, YES)) self->_readOnly = YES;   // only the owner may write it
             [self show:data];
         });
     });
@@ -542,7 +544,7 @@ static const NSUInteger kHexLimit = 64 * 1024;
             BOOL ok = wq_write(path, newData, &error);
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (!ok) {
-                    wq_alert(self, @"Save failed", error);
+                    wq_alert(self, @"Save failed", wq_permission_hint(path, YES) ?: error);
                     return;
                 }
                 self->_textView.editable = NO;
@@ -613,7 +615,7 @@ static void wq_open_file(UINavigationController *nav, NSString *path, BOOL readO
     };
     if (mode != WQOpenAuto) { push(mode); return; }
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSData *head = wq_read_range(path, 0, 4096, NULL);
+        NSData *head = wq_permission_hint(path, NO) ? nil : wq_read_range(path, 0, 4096, NULL);
         WQOpenMode m = head ? wq_sniff(head) : WQOpenText;   // unreadable: the file viewer shows why
         dispatch_async(dispatch_get_main_queue(), ^{ push(m); });
     });
