@@ -1822,6 +1822,7 @@ static NSString *wq_latest_app_backup(NSString *bundleID)
 {
     [super viewDidLoad];
     self.navigationController.navigationBar.prefersLargeTitles = YES;
+    self.tableView.tableFooterView = [self authorFooter];
     dispatch_async(wq_io(), ^{
         NSString *group = wq_app_group();
         if (!group) {
@@ -1831,6 +1832,53 @@ static NSString *wq_latest_app_backup(NSString *bundleID)
             });
         }
     });
+}
+
+// "by kolbicz" with GitHub and X links, under the last section.
+- (UIView *)authorFooter
+{
+    UIView *footer = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, 128)];
+    UILabel *by = [UILabel new];
+    by.text = @"WQ Files by kolbicz";
+    by.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+    by.textColor = UIColor.secondaryLabelColor;
+
+    UIButton *(^link)(NSString *, NSString *, NSString *) = ^UIButton *(NSString *title, NSString *symbol, NSString *url) {
+        UIButtonConfiguration *cfg = [UIButtonConfiguration tintedButtonConfiguration];
+        cfg.title = title;
+        cfg.image = [UIImage systemImageNamed:symbol];
+        cfg.imagePadding = 6;
+        cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+        cfg.buttonSize = UIButtonConfigurationSizeSmall;
+        return [UIButton buttonWithConfiguration:cfg primaryAction:[UIAction actionWithHandler:^(UIAction *a) {
+            [UIApplication.sharedApplication openURL:[NSURL URLWithString:url] options:@{} completionHandler:nil];
+        }]];
+    };
+    UIStackView *links = [[UIStackView alloc] initWithArrangedSubviews:@[
+        link(@"GitHub", @"chevron.left.forwardslash.chevron.right", @"https://github.com/kolbicz"),
+        link(@"@_kolbicz", @"at", @"https://x.com/_kolbicz"),
+    ]];
+    links.spacing = 12;
+
+    UIButtonConfiguration *creditCfg = [UIButtonConfiguration plainButtonConfiguration];
+    creditCfg.attributedTitle = [[NSAttributedString alloc] initWithString:@"Sandbox escape: worse_query by @forcequitOS"
+        attributes:@{NSFontAttributeName: [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]}];
+    creditCfg.buttonSize = UIButtonConfigurationSizeSmall;
+    UIButton *credit = [UIButton buttonWithConfiguration:creditCfg primaryAction:[UIAction actionWithHandler:^(UIAction *a) {
+        [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"https://x.com/forcequitOS"] options:@{} completionHandler:nil];
+    }]];
+
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[by, links, credit]];
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.alignment = UIStackViewAlignmentCenter;
+    stack.spacing = 8;
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    [footer addSubview:stack];
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.centerXAnchor constraintEqualToAnchor:footer.centerXAnchor],
+        [stack.topAnchor constraintEqualToAnchor:footer.topAnchor constant:8],
+    ]];
+    return footer;
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }
@@ -1848,7 +1896,7 @@ static NSString *wq_latest_app_backup(NSString *bundleID)
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
     return section == 1
-        ? @"Overwritten and deleted files are copied to Backups first (also visible in the Files app). Long-press a backup to restore it.\n\nSandbox escape: worse_query by Taj C (forcequit)."
+        ? @"Overwritten and deleted files are copied to Backups first (also visible in the Files app). Long-press a backup to restore it."
         : nil;
 }
 
