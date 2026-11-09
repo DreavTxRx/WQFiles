@@ -1,0 +1,30 @@
+
+name: Build WQFiles IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compile WQFiles
+        run: |
+          chmod +x build.sh
+          ./build.sh
+
+      - name: Verify IPA
+        run: |
+          ls -lh WQFiles.ipa
+          unzip -l WQFiles.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: WQFiles-IPA
+          path: WQFiles.ipa
+          if-no-files-found: error
