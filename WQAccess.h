@@ -40,6 +40,13 @@ BOOL wq_create_file_from(NSString *path, NSString *source, NSString *_Nullable *
 // Streams a file from anywhere into a local path (replaced if it exists).
 BOOL wq_copy_to_local(NSString *path, NSString *dest, NSString *_Nullable *_Nullable errorText);
 
+// Reads `length` bytes at `offset` (fewer at the end of the file).
+NSData *_Nullable wq_read_range(NSString *path, unsigned long long offset, NSUInteger length,
+                                NSString *_Nullable *_Nullable errorText);
+// Overwrites bytes in place: offset -> replacement bytes. The file keeps its
+// size; it is backed up first, and flush/close errors are reported.
+BOOL wq_patch(NSString *path, NSDictionary<NSNumber *, NSData *> *runs, NSString *_Nullable *_Nullable errorText);
+
 // Creates a new file or folder inside dir.
 BOOL wq_create_file(NSString *path, NSData *data, NSString *_Nullable *_Nullable errorText);
 BOOL wq_create_dir(NSString *path, NSString *_Nullable *_Nullable errorText);

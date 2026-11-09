@@ -30,11 +30,18 @@ the way KAMUI does it.
 - **Cache Cleaner**: cache and temp size per app, with search, Select All /
   None / Large Caches (50 MB+) and crash logs. Long-press an app to jump to its
   Caches, tmp or data folder.
-- **Files**: browse, read and share files. Property lists show as formatted
-  XML, images render, text is editable, anything else is a hex dump. Edit and
-  **Save** writes back in place (same inode, owner and attributes). Create
-  folders, import files, rename and delete. Long-press a folder to share it as
-  a ZIP.
+- **Files**: browse, read and share files; each opens in the fitting tool,
+  and **Open As** switches between them. Saving writes back in place (same
+  inode, owner and attributes). Create folders, import files, rename and
+  delete. Long-press a folder to share it as a ZIP.
+  - **Plist editor**: browse dictionaries and arrays, edit values by type
+    (switches for booleans, numbers, text, dates, data as hex), add, delete,
+    rename and reorder. Saves in the file's own format (binary or XML).
+  - **Hex viewer and editor**: any file size (read in pages), go to offset,
+    find hex bytes or text, overwrite bytes in place. Changed bytes are
+    highlighted until saved; the file size never changes.
+  - **Text and images**: text is editable, images render, plists can also be
+    edited as XML text.
 - **Log**: everything the app changed, plus the App Group it received.
 
 App names come from LaunchServices' own database, read from lsd's container

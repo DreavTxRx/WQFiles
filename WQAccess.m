@@ -458,6 +458,64 @@ BOOL wq_copy_to_local(NSString *path, NSString *dest, NSString **errorText)
     return wq_copy_file_out(path, dest, errorText);
 }
 
+NSData *wq_read_range(NSString *path, unsigned long long offset, NSUInteger length, NSString **errorText)
+{
+    int fd = wq_open(path, O_RDONLY, 0);
+    if (fd < 0) { if (errorText) *errorText = wq_errno(errno); return nil; }
+    NSMutableData *data = [NSMutableData dataWithLength:length];
+    NSUInteger got = 0;
+    while (got < length) {
+        ssize_t n = pread(fd, (uint8_t *)data.mutableBytes + got, length - got, (off_t)(offset + got));
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0) { if (errorText) *errorText = wq_errno(errno); close(fd); return nil; }
+        if (n == 0) break;
+        got += (NSUInteger)n;
+    }
+    close(fd);
+    data.length = got;
+    return data;
+}
+
+BOOL wq_patch(NSString *path, NSDictionary<NSNumber *, NSData *> *runs, NSString **errorText)
+{
+    struct stat before;
+    if (!wq_stat(path, &before) || !S_ISREG(before.st_mode)) {
+        if (errorText) *errorText = @"Not a regular file";
+        return NO;
+    }
+    for (NSNumber *off in runs) {
+        if (off.unsignedLongLongValue + runs[off].length > (unsigned long long)before.st_size) {
+            if (errorText) *errorText = @"A change lies past the end of the file";
+            return NO;
+        }
+    }
+    if (!wq_backup(path)) {
+        if (errorText) *errorText = @"Backup of the current file failed, nothing was written";
+        return NO;
+    }
+    int fd = wq_open(path, O_WRONLY, 0);
+    if (fd < 0) { if (errorText) *errorText = wq_errno(errno); return NO; }
+    BOOL ok = YES;
+    int err = 0;
+    NSUInteger bytes = 0;
+    for (NSNumber *off in [runs.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+        NSData *run = runs[off];
+        for (NSUInteger done = 0; ok && done < run.length; ) {
+            ssize_t n = pwrite(fd, (const uint8_t *)run.bytes + done, run.length - done, (off_t)(off.unsignedLongLongValue + done));
+            if (n < 0 && errno == EINTR) continue;
+            if (n <= 0) { ok = NO; err = errno; break; }
+            done += (NSUInteger)n;
+        }
+        if (!ok) break;
+        bytes += run.length;
+    }
+    ok = wq_finish_fd(fd, ok, &err);
+    wq_log(@"patch: %@ (%lu bytes in %lu runs) -> %@", path, (unsigned long)bytes, (unsigned long)runs.count,
+           ok ? @"OK" : wq_errno(err));
+    if (!ok && errorText) *errorText = [NSString stringWithFormat:@"%@ (the previous contents are in Backups)", wq_errno(err)];
+    return ok;
+}
+
 BOOL wq_create_file(NSString *path, NSData *data, NSString **errorText)
 {
     int fd = wq_open(path, O_WRONLY | O_CREAT | O_EXCL, 0644);

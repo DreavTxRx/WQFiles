@@ -13,6 +13,8 @@
 #import <sys/sysctl.h>
 #import <sys/utsname.h>
 #import "WQAccess.h"
+#import "WQPlistEditor.h"
+#import "WQHexViewer.h"
 
 // "iPhone 17 Pro Max (iPhone18,2)\niOS 27.0.1 (24A446)"
 static NSString *wq_device_line(void)
@@ -334,6 +336,10 @@ static NSString *wq_zip_name(NSString *dir)
 
 #pragma mark - File viewer
 
+typedef NS_ENUM(NSInteger, WQOpenMode) { WQOpenAuto, WQOpenPlist, WQOpenText, WQOpenHex };
+// Opens a file in the fitting viewer (Auto: chosen from its first bytes).
+static void wq_open_file(UINavigationController *nav, NSString *path, BOOL readOnly, WQOpenMode mode);
+
 typedef NS_ENUM(NSInteger, WQViewKind) { WQViewText, WQViewPlist, WQViewImage, WQViewHex };
 
 @interface WQFileViewController : UIViewController
@@ -392,7 +398,15 @@ static const NSUInteger kHexLimit = 64 * 1024;
     }
     UIBarButtonItem *share = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAction
                                                                            target:self action:@selector(share:)];
-    self.navigationItem.rightBarButtonItems = @[share];
+    __weak typeof(self) weakSelf = self;
+    UIMenu *openAs = [UIMenu menuWithTitle:@"Open As" children:@[
+        [UIAction actionWithTitle:@"Plist Editor" image:[UIImage systemImageNamed:@"list.bullet.indent"] identifier:nil
+                          handler:^(UIAction *a) { [weakSelf reopenAs:WQOpenPlist]; }],
+        [UIAction actionWithTitle:@"Hex Viewer" image:[UIImage systemImageNamed:@"number"] identifier:nil
+                          handler:^(UIAction *a) { [weakSelf reopenAs:WQOpenHex]; }],
+    ]];
+    UIBarButtonItem *more = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"] menu:openAs];
+    self.navigationItem.rightBarButtonItems = @[share, more];
     _textView.text = @"Loading…";
     [self load];
 }
@@ -487,7 +501,8 @@ static const NSUInteger kHexLimit = 64 * 1024;
 {
     UIBarButtonItem *edit = [[UIBarButtonItem alloc] initWithTitle:@"Edit" style:UIBarButtonItemStylePlain
                                                             target:self action:@selector(toggleEdit:)];
-    self.navigationItem.rightBarButtonItems = @[self.navigationItem.rightBarButtonItems.firstObject, edit];
+    NSArray *items = self.navigationItem.rightBarButtonItems;
+    self.navigationItem.rightBarButtonItems = [items arrayByAddingObject:edit];
 }
 
 - (void)toggleEdit:(UIBarButtonItem *)sender
@@ -546,7 +561,63 @@ static const NSUInteger kHexLimit = 64 * 1024;
     wq_share(self, _path, nil);
 }
 
+- (void)reopenAs:(WQOpenMode)mode
+{
+    UINavigationController *nav = self.navigationController;
+    NSString *path = _path;
+    BOOL readOnly = _readOnly;
+    [nav popViewControllerAnimated:NO];
+    wq_open_file(nav, path, readOnly, mode);
+}
+
 @end
+
+#pragma mark - Choosing a viewer
+
+static WQOpenMode wq_sniff(NSData *head)
+{
+    const uint8_t *b = head.bytes;
+    NSUInteger n = head.length;
+    if (n >= 7 && memcmp(b, "bplist0", 7) == 0) return WQOpenPlist;
+    if ((n >= 8 && memcmp(b, "\x89PNG", 4) == 0) || (n >= 3 && b[0] == 0xff && b[1] == 0xd8 && b[2] == 0xff) ||
+        (n >= 4 && memcmp(b, "GIF8", 4) == 0) || (n >= 12 && memcmp(b + 4, "ftyp", 4) == 0))
+        return WQOpenText;   // images: the file viewer renders them
+    if (n == 0) return WQOpenText;
+    if (memchr(b, 0, n)) return WQOpenHex;
+    NSString *text = nil;
+    for (NSUInteger cut = 0; cut < 4 && !text && cut < n; cut++)   // the sample may end mid-character
+        text = [[NSString alloc] initWithBytes:b length:n - cut encoding:NSUTF8StringEncoding];
+    if (!text) return WQOpenHex;
+    if ([text containsString:@"<plist"] || [text containsString:@"<!DOCTYPE plist"]) return WQOpenPlist;
+    return WQOpenText;
+}
+
+static void wq_open_file(UINavigationController *nav, NSString *path, BOOL readOnly, WQOpenMode mode)
+{
+    void (^push)(WQOpenMode) = ^(WQOpenMode m) {
+        UIViewController *vc;
+        if (m == WQOpenPlist) {
+            WQPlistEditorViewController *editor = [[WQPlistEditorViewController alloc] initWithPath:path readOnly:readOnly];
+            __weak UINavigationController *weakNav = nav;
+            editor.openAsText = ^{ wq_open_file(weakNav, path, readOnly, WQOpenText); };
+            editor.openAsHex = ^{ wq_open_file(weakNav, path, readOnly, WQOpenHex); };
+            vc = editor;
+        } else if (m == WQOpenHex) {
+            vc = [[WQHexViewController alloc] initWithPath:path readOnly:readOnly];
+        } else {
+            WQFileViewController *file = [[WQFileViewController alloc] initWithPath:path];
+            file.readOnly = readOnly;
+            vc = file;
+        }
+        [nav pushViewController:vc animated:YES];
+    };
+    if (mode != WQOpenAuto) { push(mode); return; }
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSData *head = wq_read_range(path, 0, 4096, NULL);
+        WQOpenMode m = head ? wq_sniff(head) : WQOpenText;   // unreadable: the file viewer shows why
+        dispatch_async(dispatch_get_main_queue(), ^{ push(m); });
+    });
+}
 
 #pragma mark - Folder
 
@@ -743,9 +814,8 @@ static const NSUInteger kHexLimit = 64 * 1024;
         dir.readOnly = self.readOnly;
         next = dir;
     } else {
-        WQFileViewController *file = [[WQFileViewController alloc] initWithPath:item.path];
-        file.readOnly = self.readOnly;
-        next = file;
+        wq_open_file(self.navigationController, item.path, self.readOnly, WQOpenAuto);
+        return;
     }
     [self.navigationController pushViewController:next animated:YES];
 }
@@ -780,6 +850,19 @@ static const NSUInteger kHexLimit = 64 * 1024;
                     [weakSelf restoreBackup:item.path to:original];
                 }]];
             }
+        }
+        if (!item.isDir) {
+            BOOL ro = weakSelf.readOnly;
+            UINavigationController *nav = weakSelf.navigationController;
+            [actions addObject:[UIMenu menuWithTitle:@"Open As" image:[UIImage systemImageNamed:@"arrow.up.forward.app"] identifier:nil
+                                             options:0 children:@[
+                [UIAction actionWithTitle:@"Plist Editor" image:[UIImage systemImageNamed:@"list.bullet.indent"] identifier:nil
+                                  handler:^(UIAction *a) { wq_open_file(nav, item.path, ro, WQOpenPlist); }],
+                [UIAction actionWithTitle:@"Text / Image" image:[UIImage systemImageNamed:@"doc.plaintext"] identifier:nil
+                                  handler:^(UIAction *a) { wq_open_file(nav, item.path, ro, WQOpenText); }],
+                [UIAction actionWithTitle:@"Hex Viewer" image:[UIImage systemImageNamed:@"number"] identifier:nil
+                                  handler:^(UIAction *a) { wq_open_file(nav, item.path, ro, WQOpenHex); }],
+            ]]];
         }
         [actions addObject:[UIAction actionWithTitle:@"Copy Path" image:[UIImage systemImageNamed:@"doc.on.doc"]
                                           identifier:nil handler:^(UIAction *a) {
@@ -2162,9 +2245,9 @@ static BOOL wq_replace_part(NSString *src, NSString *dst, NSString **error)
                     wq_alert(self, @"Not found", path);
                     return;
                 }
-                UIViewController *next = isDir ? [[WQDirViewController alloc] initWithPath:path title:nil]
-                                               : [[WQFileViewController alloc] initWithPath:path];
-                [self.navigationController pushViewController:next animated:YES];
+                if (!isDir) { wq_open_file(self.navigationController, path, NO, WQOpenAuto); return; }
+                [self.navigationController pushViewController:[[WQDirViewController alloc] initWithPath:path title:nil]
+                                                     animated:YES];
             });
         });
     }]];
