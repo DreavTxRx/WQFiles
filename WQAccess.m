@@ -243,22 +243,72 @@ static BOOL wq_is_own(NSString *path)
     return groupRoot && [p hasPrefix:[wq_norm(groupRoot.path) stringByAppendingString:@"/"]];
 }
 
-// Backups/<yyyyMMdd-HHmmss>/<original absolute path>
-static BOOL wq_backup(NSString *path, NSData *contents)
+static int wq_open(NSString *path, int flags, mode_t mode);
+
+// Copies everything from fd `in` to fd `out` in chunks; fsyncs `out`.
+static BOOL wq_stream(int in, int out, NSString **errorText)
+{
+    static const size_t kChunk = 1 << 20;
+    uint8_t *buf = malloc(kChunk);
+    if (!buf) { if (errorText) *errorText = @"Out of memory"; return NO; }
+    BOOL ok = YES;
+    for (;;) {
+        ssize_t n = read(in, buf, kChunk);
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0) { ok = NO; if (errorText) *errorText = wq_errno(errno); break; }
+        if (n == 0) break;
+        for (ssize_t done = 0; done < n; ) {
+            ssize_t w = write(out, buf + done, (size_t)(n - done));
+            if (w < 0 && errno == EINTR) continue;
+            if (w <= 0) { ok = NO; if (errorText) *errorText = wq_errno(errno); break; }
+            done += w;
+        }
+        if (!ok) break;
+    }
+    free(buf);
+    if (ok && fsync(out) != 0) { ok = NO; if (errorText) *errorText = wq_errno(errno); }
+    return ok;
+}
+
+// Copies a file from anywhere (access is asked for) to `dest`, which must not
+// exist yet and is created exclusively. A partial copy is removed.
+static BOOL wq_copy_file_out(NSString *path, NSString *dest, NSString **errorText)
+{
+    int in = wq_open(path, O_RDONLY, 0);
+    if (in < 0) { if (errorText) *errorText = wq_errno(errno); return NO; }
+    int out = open(dest.fileSystemRepresentation, O_WRONLY | O_CREAT | O_EXCL, 0644);
+    if (out < 0) { if (errorText) *errorText = wq_errno(errno); close(in); return NO; }
+    BOOL ok = wq_stream(in, out, errorText);
+    close(in);
+    if (close(out) != 0 && ok) { ok = NO; if (errorText) *errorText = wq_errno(errno); }
+    if (!ok) unlink(dest.fileSystemRepresentation);
+    return ok;
+}
+
+// Backups/<yyyyMMdd-HHmmss-SSS-n>/<original absolute path>. The stamp is
+// unique per operation, so two saves in the same second never collide.
+static BOOL wq_backup(NSString *path)
 {
     if (wq_is_own(path)) return YES;
     static NSDateFormatter *fmt;
-    if (!fmt) {
+    static int counter;
+    static NSLock *lock;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
         fmt = [NSDateFormatter new];
         fmt.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
-        fmt.dateFormat = @"yyyyMMdd-HHmmss";
-    }
-    NSString *dest = [[wq_backup_root() stringByAppendingPathComponent:[fmt stringFromDate:NSDate.date]]
-                      stringByAppendingPathComponent:wq_norm(path)];
+        fmt.dateFormat = @"yyyyMMdd-HHmmss-SSS";
+        lock = [NSLock new];
+    });
+    [lock lock];
+    NSString *stamp = [NSString stringWithFormat:@"%@-%d", [fmt stringFromDate:NSDate.date], ++counter];
+    [lock unlock];
+    NSString *dest = [[wq_backup_root() stringByAppendingPathComponent:stamp] stringByAppendingPathComponent:wq_norm(path)];
     [NSFileManager.defaultManager createDirectoryAtPath:dest.stringByDeletingLastPathComponent
                             withIntermediateDirectories:YES attributes:nil error:nil];
-    BOOL ok = [contents writeToFile:dest atomically:YES];
-    wq_log(@"backup: %@ -> %@", path, ok ? dest : @"FAILED");
+    NSString *error = nil;
+    BOOL ok = wq_copy_file_out(path, dest, &error);
+    wq_log(@"backup: %@ -> %@", path, ok ? dest : [@"FAILED: " stringByAppendingString:error ?: @"?"]);
     return ok;
 }
 
@@ -339,16 +389,18 @@ static BOOL wq_write_all(int fd, NSData *data)
     return YES;
 }
 
+// Writes, then flushes and closes, reporting the first failure of the three.
+static BOOL wq_finish_fd(int fd, BOOL ok, int *err)
+{
+    if (ok && fsync(fd) != 0) { ok = NO; *err = errno; }
+    if (close(fd) != 0 && ok) { ok = NO; *err = errno; }
+    return ok;
+}
+
 BOOL wq_write(NSString *path, NSData *data, NSString **errorText)
 {
-    NSString *readError = nil;
-    NSData *old = wq_read(path, 0, &readError);
-    if (!old) {
-        if (errorText) *errorText = [NSString stringWithFormat:@"Cannot read the current file for a backup: %@", readError];
-        return NO;
-    }
-    if (!wq_backup(path, old)) {
-        if (errorText) *errorText = @"Backup failed, nothing was written";
+    if (!wq_backup(path)) {
+        if (errorText) *errorText = @"Backup of the current file failed, nothing was written";
         return NO;
     }
     int fd = wq_open(path, O_WRONLY | O_TRUNC, 0);
@@ -358,11 +410,52 @@ BOOL wq_write(NSString *path, NSData *data, NSString **errorText)
     }
     BOOL ok = wq_write_all(fd, data);
     int err = errno;
-    if (ok) fsync(fd);
-    close(fd);
+    ok = wq_finish_fd(fd, ok, &err);
     wq_log(@"write: %@ (%lu bytes) -> %@", path, (unsigned long)data.length, ok ? @"OK" : wq_errno(err));
-    if (!ok && errorText) *errorText = wq_errno(err);
+    if (!ok && errorText) *errorText = [NSString stringWithFormat:@"%@ (the previous contents are in Backups)", wq_errno(err)];
     return ok;
+}
+
+BOOL wq_write_from_file(NSString *path, NSString *source, NSString **errorText)
+{
+    int in = open(source.fileSystemRepresentation, O_RDONLY);
+    if (in < 0) { if (errorText) *errorText = wq_errno(errno); return NO; }
+    if (!wq_backup(path)) {
+        close(in);
+        if (errorText) *errorText = @"Backup of the current file failed, nothing was written";
+        return NO;
+    }
+    int fd = wq_open(path, O_WRONLY | O_TRUNC, 0);
+    if (fd < 0) { if (errorText) *errorText = wq_errno(errno); close(in); return NO; }
+    NSString *error = nil;
+    BOOL ok = wq_stream(in, fd, &error);
+    close(in);
+    if (close(fd) != 0 && ok) { ok = NO; error = wq_errno(errno); }
+    wq_log(@"write: %@ from %@ -> %@", path, source.lastPathComponent, ok ? @"OK" : error);
+    if (!ok && errorText) *errorText = [NSString stringWithFormat:@"%@ (the previous contents are in Backups)", error];
+    return ok;
+}
+
+BOOL wq_create_file_from(NSString *path, NSString *source, NSString **errorText)
+{
+    int in = open(source.fileSystemRepresentation, O_RDONLY);
+    if (in < 0) { if (errorText) *errorText = wq_errno(errno); return NO; }
+    int fd = wq_open(path, O_WRONLY | O_CREAT | O_EXCL, 0644);
+    if (fd < 0) { if (errorText) *errorText = wq_errno(errno); close(in); return NO; }
+    NSString *error = nil;
+    BOOL ok = wq_stream(in, fd, &error);
+    close(in);
+    if (close(fd) != 0 && ok) { ok = NO; error = wq_errno(errno); }
+    if (!ok) unlink(path.fileSystemRepresentation);
+    wq_log(@"create: %@ from %@ -> %@", path, source.lastPathComponent, ok ? @"OK" : error);
+    if (!ok && errorText) *errorText = error;
+    return ok;
+}
+
+BOOL wq_copy_to_local(NSString *path, NSString *dest, NSString **errorText)
+{
+    unlink(dest.fileSystemRepresentation);
+    return wq_copy_file_out(path, dest, errorText);
 }
 
 BOOL wq_create_file(NSString *path, NSData *data, NSString **errorText)
@@ -374,7 +467,8 @@ BOOL wq_create_file(NSString *path, NSData *data, NSString **errorText)
     }
     BOOL ok = wq_write_all(fd, data);
     int err = errno;
-    close(fd);
+    ok = wq_finish_fd(fd, ok, &err);
+    if (!ok) unlink(path.fileSystemRepresentation);
     wq_log(@"create: %@ (%lu bytes) -> %@", path, (unsigned long)data.length, ok ? @"OK" : wq_errno(err));
     if (!ok && errorText) *errorText = wq_errno(err);
     return ok;
@@ -404,14 +498,9 @@ BOOL wq_delete(NSString *path, NSString **errorText)
         if (rc != 0 && wq_is_denied(errno) && wq_grant(path.stringByDeletingLastPathComponent))
             rc = rmdir(path.fileSystemRepresentation);
     } else {
-        if (S_ISREG(st.st_mode)) {
-            NSString *readError = nil;
-            NSData *old = wq_read(path, 0, &readError);
-            if (!old || !wq_backup(path, old)) {
-                if (errorText) *errorText = [NSString stringWithFormat:@"Backup failed, nothing was deleted%@",
-                                             readError ? [@": " stringByAppendingString:readError] : @""];
-                return NO;
-            }
+        if (S_ISREG(st.st_mode) && !wq_backup(path)) {
+            if (errorText) *errorText = @"Backup failed, nothing was deleted";
+            return NO;
         }
         rc = unlink(path.fileSystemRepresentation);
         if (rc != 0 && wq_is_denied(errno) && wq_grant(path.stringByDeletingLastPathComponent))
@@ -545,9 +634,23 @@ unsigned long long wq_dir_size(NSString *dir)
 BOOL wq_purge_contents(NSString *dir, unsigned long long *freed)
 {
     struct stat st;
-    if (!wq_stat(dir, &st) || !S_ISDIR(st.st_mode)) return YES;  // nothing to do
-    wq_grant(dir);
-    NSArray *children = [NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:nil];
+    if (lstat(dir.fileSystemRepresentation, &st) != 0) {
+        if (errno == ENOENT) return YES;  // not there: nothing to remove
+        if (!wq_stat(dir, &st)) {
+            wq_log(@"purge: %@ -> cannot access (%@)", dir, wq_errno(errno));
+            return NO;
+        }
+    }
+    if (!S_ISDIR(st.st_mode)) {
+        wq_log(@"purge: %@ -> not a folder", dir);
+        return NO;
+    }
+    NSString *listError = nil;
+    NSArray *children = wq_list(dir, &listError);
+    if (!children) {
+        wq_log(@"purge: %@ -> cannot list (%@)", dir, listError);
+        return NO;
+    }
     BOOL allOk = YES;
     for (NSString *name in children) {
         NSString *child = [dir stringByAppendingPathComponent:name];

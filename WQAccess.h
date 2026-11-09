@@ -33,6 +33,13 @@ NSData *_Nullable wq_read(NSString *path, NSUInteger maxBytes, NSString *_Nullab
 // contents are backed up first when the file is outside our own container.
 BOOL wq_write(NSString *path, NSData *data, NSString *_Nullable *_Nullable errorText);
 
+// Same as wq_write / wq_create_file, but streamed from a local file (for large
+// files; nothing is held in memory). A failed create leaves no partial file.
+BOOL wq_write_from_file(NSString *path, NSString *source, NSString *_Nullable *_Nullable errorText);
+BOOL wq_create_file_from(NSString *path, NSString *source, NSString *_Nullable *_Nullable errorText);
+// Streams a file from anywhere into a local path (replaced if it exists).
+BOOL wq_copy_to_local(NSString *path, NSString *dest, NSString *_Nullable *_Nullable errorText);
+
 // Creates a new file or folder inside dir.
 BOOL wq_create_file(NSString *path, NSData *data, NSString *_Nullable *_Nullable errorText);
 BOOL wq_create_dir(NSString *path, NSString *_Nullable *_Nullable errorText);
@@ -56,7 +63,8 @@ NSArray<NSString *> *_Nullable wq_enumerate(NSString *dir, int64_t maxInode,
 unsigned long long wq_dir_size(NSString *dir);
 
 // Deletes every item *inside* dir (dir itself stays). No backup — for caches.
-// Adds freed bytes to *freed. Returns NO if some items could not be removed.
+// Adds freed bytes to *freed. A missing dir counts as done; NO if dir cannot
+// be read or listed, or if some items could not be removed.
 BOOL wq_purge_contents(NSString *dir, unsigned long long *freed);
 
 // Copies every item inside srcDir into dstDir (replacing same-named items).
