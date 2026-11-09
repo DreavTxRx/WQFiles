@@ -343,6 +343,17 @@ static int wq_open(NSString *path, int flags, mode_t mode)
         if (fd >= 0 || !wq_is_denied(errno)) return fd;
     }
     if (!(flags & O_CREAT) && wq_grant(path)) fd = open(path.fileSystemRepresentation, flags, mode);
+    if (fd < 0) {
+        // Say why: a sandbox refusal (EPERM) and plain Unix permissions
+        // (EACCES: owner/mode don't allow it) need different fixes.
+        int err = errno;
+        struct stat st;
+        BOOL have = lstat(path.fileSystemRepresentation, &st) == 0;
+        wq_log(@"open %@ for %@ -> %@; file uid %d mode %o, we are uid %d", path,
+               (flags & O_ACCMODE) == O_RDONLY ? @"reading" : @"writing", wq_errno(err),
+               have ? (int)st.st_uid : -1, have ? (int)(st.st_mode & 07777) : 0, (int)getuid());
+        errno = err;
+    }
     return fd;
 }
 
