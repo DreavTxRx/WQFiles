@@ -1,8 +1,9 @@
-# WQ Files
+# Worse Query Files
 
-File browser, app data manager and cache cleaner for iOS 27. It reaches other
-apps' and system containers through the worse_query sandbox technique, with no
-jailbreak and no kernel exploit. Built and tested on iOS 27.0.1.
+**WQ Files** is a file browser, app data manager and cache cleaner for iOS 27.
+"WQ" stands for worse_query, the sandbox technique it is built on. It reaches
+other apps' and system containers with no jailbreak and no kernel exploit.
+Built and tested on iOS 27.0.1.
 
 ## What it opens
 
