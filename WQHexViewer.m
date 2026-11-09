@@ -40,6 +40,7 @@ static NSData *wqh_parse_hex(NSString *text)
     BOOL _readOnly;
     unsigned long long _size;
     NSUInteger _perRow;
+    int _offsetDigits;     // hex digits in the offset column
     NSCache<NSNumber *, NSData *> *_pages;
     NSMutableSet<NSNumber *> *_loading;
     NSMutableDictionary<NSNumber *, NSNumber *> *_edits;   // offset -> new byte
@@ -55,6 +56,7 @@ static NSData *wqh_parse_hex(NSString *text)
         _path = [path copy];
         _readOnly = readOnly;
         _perRow = 8;
+        _offsetDigits = 8;
         _pages = [NSCache new];
         _pages.countLimit = 64;   // 4 MB
         _loading = [NSMutableSet new];
@@ -79,6 +81,7 @@ static NSData *wqh_parse_hex(NSString *text)
         BOOL ok = wq_stat(path, &st) && S_ISREG(st.st_mode);
         dispatch_async(dispatch_get_main_queue(), ^{
             self->_size = ok ? (unsigned long long)st.st_size : 0;
+            [self layoutColumns];
             if (wq_permission_hint(path, YES)) self->_readOnly = YES;
             self->_status = ok ? nil : @"Cannot open this file.";
             [self updateBar];
@@ -88,14 +91,35 @@ static NSData *wqh_parse_hex(NSString *text)
     [self updateBar];
 }
 
+- (UIFont *)rowFont
+{
+    return [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
+}
+
+// As many bytes per row as fit (in steps of 4), and an offset column only as
+// wide as the file needs.
+- (void)layoutColumns
+{
+    int digits = 4;
+    for (unsigned long long last = _size ? _size - 1 : 0; digits < 16 && (last >> (4 * digits)); digits++) {}
+    CGFloat charWidth = [@"0" sizeWithAttributes:@{ NSFontAttributeName: self.rowFont }].width;
+    CGFloat avail = self.tableView.bounds.size.width - 16;   // 8 pt margins on each side
+    if (charWidth <= 0 || avail <= 0) return;
+    NSInteger chars = (NSInteger)floor(avail / charWidth);
+    // A row is: offset, 2 spaces, "xx " per byte, 1 space, 1 character per byte.
+    NSInteger fit = (chars - digits - 3) / 4;
+    NSUInteger per = (NSUInteger)MAX(4, MIN(32, fit - fit % 4));
+    if (per != _perRow || digits != _offsetDigits) {
+        _perRow = per;
+        _offsetDigits = digits;
+        [self.tableView reloadData];
+    }
+}
+
 - (void)viewWillLayoutSubviews
 {
     [super viewWillLayoutSubviews];
-    NSUInteger per = self.tableView.bounds.size.width >= 560 ? 16 : 8;
-    if (per != _perRow) {
-        _perRow = per;
-        [self.tableView reloadData];
-    }
+    [self layoutColumns];
 }
 
 - (void)updateBar
@@ -179,10 +203,10 @@ static NSData *wqh_parse_hex(NSString *text)
 {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"h"]
         ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"h"];
-    UIFont *font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
+    UIFont *font = self.rowFont;
     unsigned long long start = (unsigned long long)indexPath.row * _perRow;
     NSMutableAttributedString *line = [[NSMutableAttributedString alloc]
-        initWithString:[NSString stringWithFormat:@"%08llx  ", start]
+        initWithString:[NSString stringWithFormat:@"%0*llx  ", _offsetDigits, start]
             attributes:@{ NSFontAttributeName: font, NSForegroundColorAttributeName: UIColor.secondaryLabelColor }];
     NSMutableString *ascii = [NSMutableString new];
     NSMutableArray<NSValue *> *asciiMarks = [NSMutableArray new];
