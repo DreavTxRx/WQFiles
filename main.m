@@ -616,7 +616,7 @@ static const NSUInteger kHexLimit = 64 * 1024;
             dispatch_async(dispatch_get_main_queue(), ^{
                 self.navigationItem.prompt = @"Scanning inodes…";
             });
-            childPaths = wq_enumerate(path, 400000, ^(int64_t done, int64_t total, NSUInteger f) {
+            childPaths = wq_enumerate(path, 0, ^(int64_t done, int64_t total, NSUInteger f) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     self.navigationItem.prompt = [NSString stringWithFormat:@"Scanning inodes… %lld%% · %lu found",
                                                   (long long)(done * 100 / total), (unsigned long)f];
@@ -1280,7 +1280,7 @@ static NSString *const kCrashLogsPath =
                            @"/private/var/mobile/Containers/Data/PluginKitPlugin"];
         for (NSString *root in roots) {
             NSString *kind = [root.lastPathComponent isEqualToString:@"Application"] ? @"apps" : @"extensions";
-            NSArray *containers = wq_enumerate(root, 400000, ^(int64_t done, int64_t total, NSUInteger f) {
+            NSArray *containers = wq_enumerate(root, 0, ^(int64_t done, int64_t total, NSUInteger f) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     [self setStatus:[NSString stringWithFormat:@"Finding %@… %lld%%", kind, (long long)(done * 100 / total)]];
                 });
@@ -1563,7 +1563,7 @@ static NSString *wq_latest_app_backup(NSString *bundleID)
     [self setBusy:YES status:@"Finding apps…"];
     NSString *home = [NSHomeDirectory() stringByResolvingSymlinksInPath];
     dispatch_async(wq_io(), ^{
-        NSArray *containers = wq_enumerate(@"/private/var/mobile/Containers/Data/Application", 400000,
+        NSArray *containers = wq_enumerate(@"/private/var/mobile/Containers/Data/Application", 0,
             ^(int64_t done, int64_t total, NSUInteger f) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     self->_status = [NSString stringWithFormat:@"Finding apps… %lld%%", (long long)(done * 100 / total)];

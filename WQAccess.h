@@ -46,8 +46,9 @@ BOOL wq_stat(NSString *path, struct stat *st);
 
 // Discovers direct children of dir by brute-forcing inode numbers with
 // fsgetpath (not sandbox-gated), the way KAMUI/bad_query_list do. Needs no
-// token on dir. maxInode bounds the scan; progress is called off the main
-// thread. Returns absolute child paths.
+// token on dir. maxInode bounds the scan (0 = up to the newest id on the
+// volume); progress is called off the main thread, from several threads.
+// Returns absolute child paths, sorted.
 NSArray<NSString *> *_Nullable wq_enumerate(NSString *dir, int64_t maxInode,
                                             void (^_Nullable progress)(int64_t done, int64_t total, NSUInteger found));
 

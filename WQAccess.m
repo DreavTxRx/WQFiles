@@ -447,6 +447,25 @@ BOOL wq_rename(NSString *path, NSString *newName, NSString **errorText)
 // fsgetpath: resolve a filesystem object id to a path. Not in the public SDK.
 extern ssize_t fsgetpath(char *buf, size_t buflen, fsid_t *fsid, uint64_t objid);
 
+// Highest object id in use on the volume, roughly: APFS hands out ids in
+// increasing order, so a file created now gets one of the newest. Containers
+// of apps installed long after setup sit far above the ids of Apple's own
+// apps; a fixed limit misses them on a well-used device.
+static int64_t wq_volume_max_inode(fsid_t fsid)
+{
+    NSString *probe = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                       [NSString stringWithFormat:@"wq-inode-%u", arc4random()]];
+    int fd = open(probe.fileSystemRepresentation, O_CREAT | O_EXCL | O_WRONLY, 0600);
+    struct stat st = {0};
+    struct statfs sfs = {0};
+    BOOL ok = fd >= 0 && fstat(fd, &st) == 0 && fstatfs(fd, &sfs) == 0;
+    if (fd >= 0) close(fd);
+    unlink(probe.fileSystemRepresentation);
+    if (!ok) return 0;
+    if (memcmp(&sfs.f_fsid, &fsid, sizeof(fsid)) != 0) return 0;  // different volume
+    return (int64_t)st.st_ino + 100000;
+}
+
 NSArray<NSString *> *wq_enumerate(NSString *dir, int64_t maxInode,
                                   void (^progress)(int64_t, int64_t, NSUInteger))
 {
@@ -458,22 +477,43 @@ NSArray<NSString *> *wq_enumerate(NSString *dir, int64_t maxInode,
         return nil;
     }
     fsid_t fsid = sfs.f_fsid;
+    if (maxInode <= 0) {
+        maxInode = wq_volume_max_inode(fsid);
+        if (maxInode <= 0) maxInode = 4000000;
+        static dispatch_once_t once;
+        int64_t shown = maxInode;
+        dispatch_once(&once, ^{ wq_log(@"Container scan covers object ids up to %lld", shown); });
+    }
     const char *prefix = base.fileSystemRepresentation;
     size_t prefixLen = strlen(prefix);
     NSMutableArray<NSString *> *found = [NSMutableArray new];
-    char buf[1200];
-    for (int64_t ino = 1; ino <= maxInode; ino++) {
-        ssize_t n = fsgetpath(buf, sizeof(buf), &fsid, (uint64_t)ino);
-        if (n > 0) {
+    NSLock *lock = [NSLock new];
+
+    // fsgetpath is a plain syscall; scan the id range in chunks on all cores.
+    const int64_t chunk = 32768;
+    size_t chunks = (size_t)((maxInode + chunk - 1) / chunk);
+    __block int64_t done = 0;
+    dispatch_apply(chunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t c) {
+        int64_t first = (int64_t)c * chunk + 1, last = MIN(first + chunk - 1, maxInode);
+        NSMutableArray *local = [NSMutableArray new];
+        fsid_t id = fsid;
+        char buf[1200];
+        for (int64_t ino = first; ino <= last; ino++) {
+            ssize_t n = fsgetpath(buf, sizeof(buf), &id, (uint64_t)ino);
             // fsgetpath returns /private/var/...; base is normalized the same way.
-            if (strncmp(buf, prefix, prefixLen) == 0 && buf[prefixLen] == '/' &&
-                strchr(buf + prefixLen + 1, '/') == NULL) {
-                [found addObject:[NSString stringWithUTF8String:buf]];
-            }
+            if (n > 0 && strncmp(buf, prefix, prefixLen) == 0 && buf[prefixLen] == '/' &&
+                strchr(buf + prefixLen + 1, '/') == NULL)
+                [local addObject:[NSString stringWithUTF8String:buf]];
         }
-        if (progress && (ino % 20000 == 0 || ino == maxInode))
-            progress(ino, maxInode, found.count);
-    }
+        [lock lock];
+        [found addObjectsFromArray:local];
+        done += last - first + 1;
+        int64_t nowDone = done;
+        NSUInteger count = found.count;
+        [lock unlock];
+        if (progress) progress(nowDone, maxInode, count);
+    });
+    [found sortUsingSelector:@selector(compare:)];
     return found;
 }
 
@@ -574,7 +614,7 @@ static NSString *wq_find_ls_store(void)
     struct stat st;
     NSString *cached = [NSUserDefaults.standardUserDefaults stringForKey:kWQLSStoreKey];
     if (cached && wq_stat(cached, &st)) return cached;
-    NSArray *daemons = wq_enumerate(@"/private/var/mobile/Containers/Data/InternalDaemon", 400000, nil);
+    NSArray *daemons = wq_enumerate(@"/private/var/mobile/Containers/Data/InternalDaemon", 0, nil);
     for (NSString *c in daemons) {
         NSString *caches = [c stringByAppendingPathComponent:@"Library/Caches"];
         for (NSString *k in wq_list(caches, NULL)) {
