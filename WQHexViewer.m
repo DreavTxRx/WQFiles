@@ -310,6 +310,20 @@ static NSData *wqh_parse_hex(NSString *text)
     [self.tableView reloadData];
 }
 
+// Home button: ask before throwing away unsaved changes.
+- (void)confirmLeaveThen:(void (^)(void))proceed
+{
+    if (!_edits.count) { proceed(); return; }
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Discard changes?"
+        message:@"Your byte changes have not been saved." preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"Keep Editing" style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"Discard" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x) {
+        [self->_edits removeAllObjects];
+        proceed();
+    }]];
+    [self presentViewController:a animated:YES completion:nil];
+}
+
 - (void)leave
 {
     if (!_edits.count) { [self.navigationController popViewControllerAnimated:YES]; return; }

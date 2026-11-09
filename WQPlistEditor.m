@@ -294,6 +294,20 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
     [self presentViewController:a animated:YES completion:nil];
 }
 
+// Home button: ask before throwing away unsaved changes.
+- (void)confirmLeaveThen:(void (^)(void))proceed
+{
+    if (!self.doc.dirty) { proceed(); return; }
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Discard changes?"
+        message:@"Your edits to this property list have not been saved." preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"Keep Editing" style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"Discard" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x) {
+        self.doc.dirty = NO;
+        proceed();
+    }]];
+    [self presentViewController:a animated:YES completion:nil];
+}
+
 - (void)save
 {
     WQPlistDocument *doc = self.doc;

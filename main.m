@@ -633,6 +633,9 @@ static void wq_open_file(UINavigationController *nav, NSString *path, BOOL readO
     NSArray<WQItem *> *_all;     // everything in the folder
     NSArray<WQItem *> *_items;   // what the search lets through (shown)
     NSString *_query;
+    UILabel *_pathLabel;
+    NSString *_scanStatus;
+    CGFloat _headerWidth;
     NSString *_error;
     BOOL _labels;
 }
@@ -667,8 +670,7 @@ static void wq_open_file(UINavigationController *nav, NSString *path, BOOL readO
                           handler:^(UIAction *a) { UIPasteboard.generalPasteboard.string = path; }]];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"]
                                                                                menu:[UIMenu menuWithChildren:menuItems]];
-    self.navigationItem.prompt = _path;
-    self.tableView.tableHeaderView = wq_device_header(self.view.bounds.size.width);
+    [self updateHeader];
     UISearchController *search = [[UISearchController alloc] initWithSearchResultsController:nil];
     search.searchResultsUpdater = self;
     search.obscuresBackgroundDuringPresentation = NO;
@@ -679,6 +681,48 @@ static void wq_open_file(UINavigationController *nav, NSString *path, BOOL readO
     self.navigationItem.hidesSearchBarWhenScrolling = NO;
     self.definesPresentationContext = YES;
     [self reload];
+}
+
+// Device strip, then the full path in normal-size text that wraps at the
+// slashes (the navigation bar's prompt shrank it until unreadable). Tap to copy.
+- (void)updateHeader
+{
+    CGFloat width = self.tableView.bounds.size.width ?: self.view.bounds.size.width;
+    if (!_pathLabel) {
+        _pathLabel = [UILabel new];
+        _pathLabel.numberOfLines = 0;
+        _pathLabel.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
+        _pathLabel.textColor = UIColor.secondaryLabelColor;
+        _pathLabel.userInteractionEnabled = YES;
+        [_pathLabel addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(copyPath)]];
+    }
+    // Zero-width spaces after each slash let lines break between components.
+    NSString *breakable = [_path stringByReplacingOccurrencesOfString:@"/" withString:@"/\u200B"];
+    _pathLabel.text = _scanStatus ? [NSString stringWithFormat:@"%@\n%@", breakable, _scanStatus] : breakable;
+    CGFloat side = 16, top = 42;
+    CGSize fit = [_pathLabel sizeThatFits:CGSizeMake(width - 2 * side, CGFLOAT_MAX)];
+    UIView *box = wq_device_header(width);
+    box.frame = CGRectMake(0, 0, width, top + ceil(fit.height) + 10);
+    _pathLabel.frame = CGRectMake(side, top, width - 2 * side, ceil(fit.height));
+    [box addSubview:_pathLabel];
+    _headerWidth = width;
+    self.tableView.tableHeaderView = box;
+}
+
+- (void)viewDidLayoutSubviews
+{
+    [super viewDidLayoutSubviews];
+    if (fabs(self.tableView.bounds.size.width - _headerWidth) > 0.5) [self updateHeader];
+}
+
+- (void)copyPath
+{
+    UIPasteboard.generalPasteboard.string = _path;
+    _scanStatus = @"Path copied";
+    [self updateHeader];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if ([self->_scanStatus isEqualToString:@"Path copied"]) { self->_scanStatus = nil; [self updateHeader]; }
+    });
 }
 
 - (void)updateSearchResultsForSearchController:(UISearchController *)searchController
@@ -719,15 +763,17 @@ static void wq_open_file(UINavigationController *nav, NSString *path, BOOL readO
         // Parent gives no token on 27.x: discover children with fsgetpath.
         if (!names && enumerable) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                self.navigationItem.prompt = @"Scanning inodes…";
+                self->_scanStatus = @"Scanning inodes…";
+                [self updateHeader];
             });
             childPaths = wq_enumerate(path, 0, ^(int64_t done, int64_t total, NSUInteger f) {
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    self.navigationItem.prompt = [NSString stringWithFormat:@"Scanning inodes… %lld%% · %lu found",
-                                                  (long long)(done * 100 / total), (unsigned long)f];
+                    self->_scanStatus = [NSString stringWithFormat:@"Scanning inodes… %lld%% · %lu found",
+                                         (long long)(done * 100 / total), (unsigned long)f];
+                    [self updateHeader];
                 });
             });
-            dispatch_async(dispatch_get_main_queue(), ^{ self.navigationItem.prompt = self->_path; });
+            dispatch_async(dispatch_get_main_queue(), ^{ self->_scanStatus = nil; [self updateHeader]; });
         }
         NSMutableArray<WQItem *> *items = [NSMutableArray new];
         NSArray *entries = names ?: childPaths;
@@ -2095,6 +2141,52 @@ static BOOL wq_replace_part(NSString *src, NSString *dst, NSString **error)
 
 @end
 
+#pragma mark - Navigation
+
+// Adds a Home button next to Back on screens two or more levels deep. Screens
+// with unsaved edits (plist editor, hex viewer) are asked first.
+@interface WQNavigationController : UINavigationController <UINavigationControllerDelegate>
+@end
+
+@implementation WQNavigationController
+
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    self.delegate = self;
+}
+
+- (void)navigationController:(UINavigationController *)nav willShowViewController:(UIViewController *)vc animated:(BOOL)animated
+{
+    NSUInteger depth = [nav.viewControllers indexOfObject:vc];
+    if (depth == NSNotFound || depth < 2) {
+        if (vc.navigationItem.leftBarButtonItem.tag == 0x484f4d45) vc.navigationItem.leftBarButtonItem = nil;
+        return;
+    }
+    if (vc.navigationItem.leftBarButtonItem) return;
+    UIBarButtonItem *home = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"house"]
+                                                             style:UIBarButtonItemStylePlain target:self action:@selector(goHome)];
+    home.tag = 0x484f4d45;   // "HOME"
+    home.accessibilityLabel = @"Home";
+    vc.navigationItem.leftItemsSupplementBackButton = YES;
+    vc.navigationItem.leftBarButtonItem = home;
+}
+
+- (void)goHome
+{
+    UIViewController *top = self.topViewController;
+    SEL ask = NSSelectorFromString(@"confirmLeaveThen:");
+    __weak typeof(self) weakSelf = self;
+    void (^home)(void) = ^{ [weakSelf popToRootViewControllerAnimated:YES]; };
+    if ([top respondsToSelector:ask]) {
+        ((void (*)(id, SEL, void (^)(void)))[top methodForSelector:ask])(top, ask, home);
+        return;
+    }
+    home();
+}
+
+@end
+
 #pragma mark - Root
 
 @interface WQRootViewController : UITableViewController
@@ -2302,7 +2394,7 @@ static BOOL wq_replace_part(NSString *src, NSString *dst, NSString **error)
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)options
 {
     UIWindow *window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
-    window.rootViewController = [[UINavigationController alloc] initWithRootViewController:[WQRootViewController new]];
+    window.rootViewController = [[WQNavigationController alloc] initWithRootViewController:[WQRootViewController new]];
     [window makeKeyAndVisible];
     self.window = window;
 }
