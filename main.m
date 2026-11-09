@@ -623,14 +623,16 @@ static void wq_open_file(UINavigationController *nav, NSString *path, BOOL readO
 
 #pragma mark - Folder
 
-@interface WQDirViewController : UITableViewController <UIDocumentPickerDelegate>
+@interface WQDirViewController : UITableViewController <UIDocumentPickerDelegate, UISearchResultsUpdating>
 @property (nonatomic) BOOL readOnly;  // root/system areas: browse + read, no writes
 - (instancetype)initWithPath:(NSString *)path title:(NSString *)title;
 @end
 
 @implementation WQDirViewController {
     NSString *_path;
-    NSArray<WQItem *> *_items;
+    NSArray<WQItem *> *_all;     // everything in the folder
+    NSArray<WQItem *> *_items;   // what the search lets through (shown)
+    NSString *_query;
     NSString *_error;
     BOOL _labels;
 }
@@ -667,7 +669,37 @@ static void wq_open_file(UINavigationController *nav, NSString *path, BOOL readO
                                                                                menu:[UIMenu menuWithChildren:menuItems]];
     self.navigationItem.prompt = _path;
     self.tableView.tableHeaderView = wq_device_header(self.view.bounds.size.width);
+    UISearchController *search = [[UISearchController alloc] initWithSearchResultsController:nil];
+    search.searchResultsUpdater = self;
+    search.obscuresBackgroundDuringPresentation = NO;
+    search.searchBar.placeholder = _labels ? @"Search names and bundle IDs" : @"Search this folder";
+    search.searchBar.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    search.searchBar.autocorrectionType = UITextAutocorrectionTypeNo;
+    self.navigationItem.searchController = search;
+    self.navigationItem.hidesSearchBarWhenScrolling = NO;
+    self.definesPresentationContext = YES;
     [self reload];
+}
+
+- (void)updateSearchResultsForSearchController:(UISearchController *)searchController
+{
+    NSString *q = [searchController.searchBar.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+    _query = q.length ? q : nil;
+    [self applyFilter];
+    [self.tableView reloadData];
+}
+
+// App name, bundle or group ID, or file name; case and accents ignored.
+- (void)applyFilter
+{
+    if (!_query) { _items = _all; return; }
+    NSStringCompareOptions opts = NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch;
+    NSString *q = _query;
+    _items = [_all filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(WQItem *item, NSDictionary *b) {
+        for (NSString *field in @[item.label ?: @"", item.name ?: @"", item.bundleID ?: @""])
+            if ([field rangeOfString:q options:opts].location != NSNotFound) return YES;
+        return NO;
+    }]];
 }
 
 - (void)reload
@@ -757,7 +789,8 @@ static void wq_open_file(UINavigationController *nav, NSString *path, BOOL readO
             return [(a.label ?: a.name) localizedCaseInsensitiveCompare:(b.label ?: b.name)];
         }];
         dispatch_async(dispatch_get_main_queue(), ^{
-            self->_items = items;
+            self->_all = items;
+            [self applyFilter];
             self->_error = (names || childPaths.count) ? nil : error;
             [self.refreshControl endRefreshing];
             [self.tableView reloadData];
